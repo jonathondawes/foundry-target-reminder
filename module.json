@@ -1,0 +1,23 @@
+{
+  "id": "foundry-target-reminder",
+  "title": "Target Reminder",
+  "version": "1.0.0",
+  "compatibility": {
+    "minimum": "11",
+    "verified": "12"
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "pf2e",
+        "type": "system",
+        "compatibility": {}
+      }
+    ]
+  },
+  "esmodules": [
+    "scripts/main.js"
+  ],
+  "manifest": "",
+  "download": ""
+}
