@@ -1,5 +1,32 @@
 Hooks.once("init", () => {
     console.log("Target Reminder | Initializing module");
+
+    game.settings.register("foundry-target-reminder", "autoTargetPrompt", {
+        name: "Target Reminder | Enable Target Selection Prompt",
+        hint: "When rolling an attack during combat with no target selected, prompt to select a target.",
+        scope: "client",
+        config: true,
+        type: Boolean,
+        default: true
+    });
+
+    game.settings.register("foundry-target-reminder", "autoRollDamage", {
+        name: "Target Reminder | Enable Auto-Roll Damage",
+        hint: "Automatically roll damage when an attack roll is a success or critical success.",
+        scope: "client",
+        config: true,
+        type: Boolean,
+        default: true
+    });
+
+    game.settings.register("foundry-target-reminder", "autoClearTargets", {
+        name: "Target Reminder | Enable Auto-Clear Targets",
+        hint: "Automatically clear target selections after rolling damage.",
+        scope: "client",
+        config: true,
+        type: Boolean,
+        default: true
+    });
 });
 
 Hooks.once("ready", () => {
@@ -15,9 +42,10 @@ Hooks.once("ready", () => {
             try {
                 const isAttack = context.type && (context.type.includes("attack"));
                 const hasTargets = game.user.targets.size > 0;
+                const autoTargetPromptEnabled = game.settings.get("foundry-target-reminder", "autoTargetPrompt");
 
-                if (isAttack && !hasTargets && game.combat?.active) {
-                    const combatants = game.combat.turns.filter(c => c.token && c.visible && !c.defeated);
+                if (isAttack && !hasTargets && game.combat?.active && autoTargetPromptEnabled) {
+                    const combatants = game.combat.turns.filter(c => c.token && c.visible && !c.defeated && !c.actor?.isOwner);
                     if (combatants.length > 0) {
                         const selectedToken = await promptTargetSelection(combatants);
                         if (selectedToken) {
@@ -25,9 +53,17 @@ Hooks.once("ready", () => {
                             selectedToken.setTarget(true, { user: game.user, releaseOthers: true });
 
                             // 2. CRITICAL FIX: Inject Target into Roll Context
-                            // Only setting user target is not enough for the current function call context
-                            context.target = selectedToken.actor;
-                            if (!context.token) context.token = selectedToken;
+                            const attackerTokenDoc = context.token;
+                            const attackerToken = attackerTokenDoc?.object || canvas.tokens.controlled[0];
+                            const distance = (attackerToken && selectedToken)
+                                ? (canvas.grid.measurePath([attackerToken.center, selectedToken.center])?.distance || 0)
+                                : 0;
+
+                            context.target = {
+                                actor: selectedToken.actor,
+                                token: selectedToken.document,
+                                distance: distance
+                            };
 
                             // Ensure options exist
                             if (!context.options) context.options = [];
@@ -51,22 +87,17 @@ Hooks.once("ready", () => {
 
             // Auto-Roll Damage Logic
             try {
+                const autoRollDamageEnabled = game.settings.get("foundry-target-reminder", "autoRollDamage");
                 const message = Array.isArray(result) ? result[0] : result;
 
-                if (message && context.item) {
+                if (message && context.item && autoRollDamageEnabled) {
                     const outcome = message.flags?.pf2e?.context?.outcome;
                     if (outcome === "success" || outcome === "criticalSuccess") {
                         console.log("Target Reminder | Auto-rolling damage...");
                         setTimeout(async () => {
                             if (context.item.rollDamage) {
-                                // Pass the event and ensure the item knows about the target (if needed)
-                                await context.item.rollDamage({ event });
-
-                                // Explicit cleanup after auto-roll
-                                console.log("Target Reminder | Auto-rolled damage complete. Clearing targets.");
-                                if (game.user.targets.size > 0) {
-                                    game.user.updateTokenTargets([]);
-                                }
+                                await context.item.rollDamage({});
+                                console.log("Target Reminder | Auto-rolled damage complete.");
                             }
                         }, 500);
                     }
@@ -82,44 +113,43 @@ Hooks.once("ready", () => {
 });
 
 async function promptTargetSelection(combatants) {
-    return new Promise((resolve) => {
-        let options = "";
-        combatants.forEach(c => {
-            options += `<div class="form-group flexrow" style="align-items: center; margin-bottom: 5px;">
-                <img src="${c.img}" width="36" height="36" style="margin-right: 10px; border: 1px solid #000; flex-shrink: 0; object-fit: cover;"/>
-                <input type="radio" name="target-selection" value="${c.tokenId}" id="target-${c.id}">
-                <label for="target-${c.id}" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${c.name}</label>
-            </div>`;
-        });
-
-        new Dialog({
-            title: "Select Target",
-            content: `<form><p>No target selected. Who are you attacking?</p><div class="target-list" style="max-height: 300px; overflow-y: auto;">${options}</div></form>`,
-            buttons: {
-                select: {
-                    icon: '<i class="fas fa-crosshairs"></i>',
-                    label: "Target Selected",
-                    callback: (html) => {
-                        const tokenId = html.find('input[name="target-selection"]:checked').val();
-                        resolve(tokenId ? canvas.tokens.get(tokenId) : null);
-                    }
-                },
-                cancel: {
-                    icon: '<i class="fas fa-times"></i>',
-                    label: "Roll Without Target",
-                    callback: () => resolve(null)
-                }
-            },
-            default: "select",
-            close: () => resolve(null)
-        }).render(true);
+    let optionsHtml = "";
+    combatants.forEach(c => {
+        optionsHtml += `<div style="display: flex; align-items: center; margin-bottom: 5px;">
+            <img src="${c.img}" width="36" height="36" style="margin-right: 10px; border: 1px solid #000; flex-shrink: 0; object-fit: cover;"/>
+            <input type="radio" name="target-selection" value="${c.tokenId}" id="target-${c.id}">
+            <label for="target-${c.id}" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${c.name}</label>
+        </div>`;
     });
+
+    const tokenId = await foundry.applications.api.DialogV2.wait({
+        window: { title: "Select Target" },
+        content: `<form><p>No target selected. Who are you attacking?</p>
+            <div class="target-list" style="max-height: 300px; overflow-y: auto;">${optionsHtml}</div></form>`,
+        buttons: [{
+            action: "select",
+            icon: "fas fa-crosshairs",
+            label: "Target Selected",
+            callback: (event, button) => {
+                const checked = button.form.querySelector('input[name="target-selection"]:checked');
+                return checked ? checked.value : null;
+            }
+        }, {
+            action: "cancel",
+            icon: "fas fa-times",
+            label: "Roll Without Target",
+            callback: () => null
+        }],
+        rejectClose: false
+    });
+
+    return tokenId ? canvas.tokens.get(tokenId) : null;
 }
 
 // Robust Target Cleanup
 Hooks.on("createChatMessage", (message) => {
     // Check if the message is from the current user
-    if (message.user.id !== game.user.id) return;
+    if (message.author.id !== game.user.id) return;
 
     // Use a small delay to allow system processing to finish
     setTimeout(() => {
@@ -142,7 +172,8 @@ Hooks.on("createChatMessage", (message) => {
             isDamage = true;
         }
 
-        if (isDamage) {
+        const autoClearTargetsEnabled = game.settings.get("foundry-target-reminder", "autoClearTargets");
+        if (isDamage && autoClearTargetsEnabled) {
             console.log("Target Reminder | Cleanup Hook: Detected Damage Roll. Clearing targets.");
             game.user.updateTokenTargets([]);
         }
