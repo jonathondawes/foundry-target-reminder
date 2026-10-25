@@ -19,4 +19,22 @@ Use a backed-up test world with a GM session and at least two separate player se
 
 ## Live results
 
-Pending. Local test installation targets Foundry 13.351 / PF2e 7.10.1. Foundry 14.369 APIs and current PF2e button names were reviewed against official documentation/source, but Foundry 14 has not been run here.
+### 25 October 2026 — Foundry 13.351 / PF2e 7.10.1
+
+Ran separate Gamemaster and Test_User1 sessions in AV Test, using an isolated Target Reminder QA scene and copied actors. Original actors were not changed.
+
+Passed live checks:
+- Target Reminder 2.1.0 is enabled.
+- A player without a target receives the popup from the native strike button.
+- Selecting QA Enemy continues exactly one original attack; its chat result names QA Enemy and AC 17.
+- No damage roll is generated automatically. Manual weapon damage works.
+- After that damage roll, a second attack goes directly to PF2e's normal roll dialog: the target is retained.
+- Advancing from the player's turn to the enemy's clears the player's target; the next attack prompts again.
+- Round rollover returns to the player's next turn with a fresh reminder.
+- A popup left open across a turn change cancels the old attack and reports that the encounter changed.
+- A GM attack without targets goes straight to PF2e's roll dialog with no reminder.
+- The GM's independent target survives both player-to-enemy transition and round rollover; a later GM attack still names QA Enemy and AC 17.
+
+Not yet live-verified: spell/elemental/familiar paths, keyboard/MAP modifiers, rapid clicks, multiple player owners, active-combatant deletion and a running Foundry 14/PF2e combination. Automated checks cover these guards where listed above. Foundry 14.369 APIs and current PF2e button names were reviewed against official documentation/source; verified remains 13.
+
+The QA scene, copied actors and setup macro remain in the test world for repeat testing. The QA encounter is left running; no encounter was ended and no QA damage was applied to an actor.
