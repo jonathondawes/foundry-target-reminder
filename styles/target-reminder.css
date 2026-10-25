@@ -1,0 +1,22 @@
+.target-reminder-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.target-reminder-choice {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.3rem;
+    cursor: pointer;
+}
+
+.target-reminder-choice img {
+    flex: 0 0 36px;
+    object-fit: cover;
+    border: 1px solid var(--color-border-light-primary, #888);
+}
+
+.target-reminder-choice span {
+    overflow-wrap: anywhere;
+}

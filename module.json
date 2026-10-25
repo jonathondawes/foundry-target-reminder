@@ -1,10 +1,11 @@
 {
   "id": "foundry-target-reminder",
   "title": "Target Reminder",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "compatibility": {
     "minimum": "13",
-    "verified": "13"
+    "verified": "13",
+    "maximum": "14"
   },
   "relationships": {
     "systems": [
@@ -19,5 +20,10 @@
     "scripts/main.js"
   ],
   "manifest": "",
-  "download": ""
+  "download": "",
+  "description": "Player-only target reminders for PF2e attacks, with target cleanup when your turn ends.",
+  "url": "https://github.com/jonathondawes/foundry-target-reminder",
+  "styles": [
+    "styles/target-reminder.css"
+  ]
 }

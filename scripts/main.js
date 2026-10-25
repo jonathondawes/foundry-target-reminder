@@ -1,181 +1,194 @@
+const MODULE_ID = "foundry-target-reminder";
+const ATTACK_ACTIONS = new Set([
+    "strike-attack", "strike-attack2", "strike-attack3",
+    "spell-attack", "spell-attack-2", "spell-attack-3",
+    "roll-attack", "familiar-attack-roll"
+]);
+const replayedClicks = new WeakSet();
+const lastTurns = new Map();
+let promptOpen = false;
+
 Hooks.once("init", () => {
-    console.log("Target Reminder | Initializing module");
-
-    game.settings.register("foundry-target-reminder", "autoTargetPrompt", {
-        name: "Target Reminder | Enable Target Selection Prompt",
-        hint: "When rolling an attack during combat with no target selected, prompt to select a target.",
-        scope: "client",
-        config: true,
-        type: Boolean,
-        default: true
+    game.settings.register(MODULE_ID, "autoTargetPrompt", {
+        name: "Show Target Reminder",
+        hint: "Remind players to choose a target before using a PF2e attack button during an encounter. GMs are excluded.",
+        scope: "client", config: true, type: Boolean, default: true
     });
-
-    game.settings.register("foundry-target-reminder", "autoRollDamage", {
-        name: "Target Reminder | Enable Auto-Roll Damage",
-        hint: "Automatically roll damage when an attack roll is a success or critical success.",
-        scope: "client",
-        config: true,
-        type: Boolean,
-        default: true
-    });
-
-    game.settings.register("foundry-target-reminder", "autoClearTargets", {
-        name: "Target Reminder | Enable Auto-Clear Targets",
-        hint: "Automatically clear target selections after rolling damage.",
-        scope: "client",
-        config: true,
-        type: Boolean,
-        default: true
+    // Keep the existing key so a player's preference survives the update.
+    game.settings.register(MODULE_ID, "autoClearTargets", {
+        name: "Clear Targets at End of Turn",
+        hint: "Clear your targets when a combatant you own finishes its turn. Targets stay selected between attacks and damage rolls. GMs are excluded.",
+        scope: "client", config: true, type: Boolean, default: true
     });
 });
 
 Hooks.once("ready", () => {
-    if (game.system.id !== "pf2e") {
-        console.warn("Target Reminder | This module is designed for Pathfinder 2e.");
-        return;
-    }
-
-    if (game.pf2e && game.pf2e.Check) {
-        const originalRoll = game.pf2e.Check.roll;
-
-        game.pf2e.Check.roll = async function (check, context = {}, event, callback) {
-            try {
-                const isAttack = context.type && (context.type.includes("attack"));
-                const hasTargets = game.user.targets.size > 0;
-                const autoTargetPromptEnabled = game.settings.get("foundry-target-reminder", "autoTargetPrompt");
-
-                if (isAttack && !hasTargets && game.combat?.active && autoTargetPromptEnabled) {
-                    const combatants = game.combat.turns.filter(c => c.token && c.visible && !c.defeated && !c.actor?.isOwner);
-                    if (combatants.length > 0) {
-                        const selectedToken = await promptTargetSelection(combatants);
-                        if (selectedToken) {
-                            // 1. Set User Target (Visual)
-                            selectedToken.setTarget(true, { user: game.user, releaseOthers: true });
-
-                            // 2. CRITICAL FIX: Inject Target into Roll Context
-                            const attackerTokenDoc = context.token;
-                            const attackerToken = attackerTokenDoc?.object || canvas.tokens.controlled[0];
-                            const distance = (attackerToken && selectedToken)
-                                ? (canvas.grid.measurePath([attackerToken.center, selectedToken.center])?.distance || 0)
-                                : 0;
-
-                            context.target = {
-                                actor: selectedToken.actor,
-                                token: selectedToken.document,
-                                distance: distance
-                            };
-
-                            // Ensure options exist
-                            if (!context.options) context.options = [];
-
-                            // PF2e uses specific option tags for targeting
-                            context.options.push(`target:token:${selectedToken.id}`);
-                            if (selectedToken.actor) {
-                                context.options.push(`target:actor:${selectedToken.actor.uuid}`);
-                            }
-
-                            console.log("Target Reminder | Injected target into context:", selectedToken.name);
-                        }
-                    }
-                }
-            } catch (err) {
-                console.error("Target Reminder | Error in roll interception:", err);
-            }
-
-            // Proceed with original roll
-            const result = await originalRoll.apply(this, [check, context, event, callback]);
-
-            // Auto-Roll Damage Logic
-            try {
-                const autoRollDamageEnabled = game.settings.get("foundry-target-reminder", "autoRollDamage");
-                const message = Array.isArray(result) ? result[0] : result;
-
-                if (message && context.item && autoRollDamageEnabled) {
-                    const outcome = message.flags?.pf2e?.context?.outcome;
-                    if (outcome === "success" || outcome === "criticalSuccess") {
-                        console.log("Target Reminder | Auto-rolling damage...");
-                        setTimeout(async () => {
-                            if (context.item.rollDamage) {
-                                await context.item.rollDamage({});
-                                console.log("Target Reminder | Auto-rolled damage complete.");
-                            }
-                        }, 500);
-                    }
-                }
-            } catch (err) {
-                console.error("Target Reminder | Error in auto-damage roll:", err);
-            }
-
-            return result;
-        };
-        console.log("Target Reminder | Hooked game.pf2e.Check.roll");
-    }
+    if (game.system.id !== "pf2e") return;
+    for (const combat of game.combats) rememberTurn(combat);
+    // Capture before PF2e's handlers calculate AC, range and modifiers.
+    // Continue the same click after selection; never patch Check.roll or its context.
+    document.addEventListener("click", event => {
+        void handleAttackClick(event).catch(error => {
+            console.error("Target Reminder | Target selection failed", error);
+            ui.notifications.warn("Target Reminder: target selection failed. Select a token and try the attack again.");
+        });
+    }, { capture: true });
+    Hooks.on("combatTurnChange", onTurnChange);
+    Hooks.on("updateCombat", onCombatUpdate);
+    Hooks.on("deleteCombat", onCombatDeleted);
 });
 
-async function promptTargetSelection(combatants) {
-    let optionsHtml = "";
-    combatants.forEach(c => {
-        optionsHtml += `<div style="display: flex; align-items: center; margin-bottom: 5px;">
-            <img src="${c.img}" width="36" height="36" style="margin-right: 10px; border: 1px solid #000; flex-shrink: 0; object-fit: cover;"/>
-            <input type="radio" name="target-selection" value="${c.tokenId}" id="target-${c.id}">
-            <label for="target-${c.id}" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${c.name}</label>
-        </div>`;
-    });
+function isPlayer() {
+    return !!game.user && !game.user.isGM;
+}
 
-    const tokenId = await foundry.applications.api.DialogV2.wait({
+function activeEncounter() {
+    const combat = game.combat;
+    return combat?.started && (combat.isActive ?? combat.active) !== false ? combat : null;
+}
+
+function turnKey(combat) {
+    return `${combat.id}:${combat.round}:${combat.turn}:${combat.combatant?.id ?? ""}`;
+}
+
+function candidatesFor(combat) {
+    return combat.turns.filter(combatant => {
+        const token = combatant.token?.object;
+        return combatant.visible !== false && !combatant.hidden && !combatant.defeated
+            && token?.actor && !token.document.hidden && token.isVisible
+            && token.document.parent?.id === canvas.scene?.id
+            && !canvas.tokens.controlled.includes(token);
+    });
+}
+
+async function handleAttackClick(event) {
+    if (replayedClicks.has(event) || !isPlayer() || event.defaultPrevented || event.button !== 0) return;
+    const button = event.target?.closest?.("[data-action]");
+    if (!button || button.disabled || !ATTACK_ACTIONS.has(button.dataset.action)) return;
+    if (promptOpen) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+    }
+    if (!game.settings.get(MODULE_ID, "autoTargetPrompt") || game.user.targets.size > 0) return;
+    const combat = activeEncounter();
+    if (!combat || !canvas.ready) return;
+    const candidates = candidatesFor(combat);
+    if (!candidates.length) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    // Repeated clicks must not queue attacks while the first awaits a choice.
+    if (promptOpen) return;
+    promptOpen = true;
+    const startingTurn = turnKey(combat);
+    try {
+        const choice = await promptTargetSelection(candidates);
+        if (!choice || !["select", "skip"].includes(choice.action)) return;
+        if (!isPlayer() || activeEncounter() !== combat || turnKey(combat) !== startingTurn || !button.isConnected) {
+            ui.notifications.info("The encounter changed. Choose your target and attack again.");
+            return;
+        }
+        if (choice.action === "select") {
+            // Revalidate: a token may have become hidden, defeated or removed.
+            const selected = candidatesFor(combat).find(c => c.tokenId === choice.tokenId)?.token.object;
+            if (!selected) {
+                ui.notifications.warn("That target is no longer available. Please try the attack again.");
+                return;
+            }
+            selected.setTarget(true, { releaseOthers: true });
+        }
+        const replay = new MouseEvent("click", {
+            bubbles: true, cancelable: true, composed: true, view: window,
+            button: event.button, buttons: event.buttons, detail: event.detail,
+            ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+            shiftKey: event.shiftKey, altKey: event.altKey,
+            clientX: event.clientX, clientY: event.clientY
+        });
+        replayedClicks.add(replay);
+        button.dispatchEvent(replay);
+    } finally {
+        promptOpen = false;
+    }
+}
+
+function escapeHTML(value) {
+    return String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    })[char]);
+}
+
+async function promptTargetSelection(combatants) {
+    const choices = combatants.map(c => `
+        <label class="target-reminder-choice">
+            <input type="radio" name="target-selection" value="${escapeHTML(c.tokenId)}">
+            <img src="${escapeHTML(c.img)}" alt="" width="36" height="36">
+            <span>${escapeHTML(c.name)}</span>
+        </label>`).join("");
+    return foundry.applications.api.DialogV2.wait({
         window: { title: "Select Target" },
-        content: `<form><p>No target selected. Who are you attacking?</p>
-            <div class="target-list" style="max-height: 300px; overflow-y: auto;">${optionsHtml}</div></form>`,
+        content: `<p>No target selected. Who are you attacking?</p><div class="target-reminder-list">${choices}</div>`,
         buttons: [{
-            action: "select",
-            icon: "fas fa-crosshairs",
-            label: "Target Selected",
-            callback: (event, button) => {
-                const checked = button.form.querySelector('input[name="target-selection"]:checked');
-                return checked ? checked.value : null;
+            action: "select", label: "Target Selected", icon: "fa-solid fa-crosshairs", default: true,
+            callback: (_event, button) => {
+                const tokenId = button.form.querySelector('input[name="target-selection"]:checked')?.value;
+                if (!tokenId) {
+                    ui.notifications.warn("Choose a target, or use Roll Without Target.");
+                    return { action: "cancel" };
+                }
+                return { action: "select", tokenId };
             }
         }, {
-            action: "cancel",
-            icon: "fas fa-times",
-            label: "Roll Without Target",
-            callback: () => null
+            action: "skip", label: "Roll Without Target", icon: "fa-solid fa-forward",
+            callback: () => ({ action: "skip" })
         }],
         rejectClose: false
     });
-
-    return tokenId ? canvas.tokens.get(tokenId) : null;
 }
 
-// Robust Target Cleanup
-Hooks.on("createChatMessage", (message) => {
-    // Check if the message is from the current user
-    if (message.author.id !== game.user.id) return;
+function rememberTurn(combat) {
+    lastTurns.set(combat.id, {
+        id: combat.combatant?.id,
+        actor: combat.combatant?.actor,
+        started: combat.started,
+        active: (combat.isActive ?? combat.active) !== false,
+        sceneId: combat.scene?.id
+    });
+}
 
-    // Use a small delay to allow system processing to finish
-    setTimeout(() => {
-        const pf2eContext = message.flags?.pf2e?.context;
+function ownsActor(actor) {
+    return isPlayer() && !!actor?.testUserPermission(game.user, "OWNER");
+}
 
-        let isDamage = false;
+function clearTargets() {
+    if (!isPlayer() || !game.settings.get(MODULE_ID, "autoClearTargets")) return;
+    // Token.setTarget works in v13 and v14; v14 removed User.updateTokenTargets.
+    for (const token of [...game.user.targets]) token.setTarget(false, { releaseOthers: false });
+}
 
-        // 1. Check Flags (Most reliable for PF2e)
-        if (pf2eContext && (pf2eContext.type === "damage-roll" || pf2eContext.type === "spell-damage-roll")) {
-            isDamage = true;
-        }
+function onTurnChange(combat, prior, current) {
+    const saved = lastTurns.get(combat.id);
+    rememberTurn(combat);
+    if (!isPlayer() || !prior?.combatantId || prior.round < 1) return;
+    const changed = prior.combatantId !== current?.combatantId || prior.round !== current?.round;
+    if (!changed || combat.id !== game.combat?.id || (combat.isActive ?? combat.active) === false) return;
+    if (combat.scene?.id !== canvas.scene?.id) return;
+    // The saved actor handles deletion of the outgoing active combatant.
+    const actor = combat.combatants.get(prior.combatantId)?.actor
+        ?? (saved?.id === prior.combatantId ? saved.actor : null);
+    if (ownsActor(actor)) clearTargets();
+}
 
-        // 2. Check Rolls Array (Fallback)
-        if (!isDamage && message.rolls && message.rolls.length > 0) {
-            isDamage = message.rolls.some(r => r.constructor.name.includes("Damage"));
-        }
+function onCombatUpdate(combat, changed) {
+    if (!("active" in changed || "round" in changed)) return;
+    const saved = lastTurns.get(combat.id);
+    if (saved?.started && saved.active && (!combat.started || (combat.isActive ?? combat.active) === false)
+        && saved.sceneId === canvas.scene?.id && ownsActor(saved.actor)) clearTargets();
+    if (!combat.started || (combat.isActive ?? combat.active) === false || !saved?.started) rememberTurn(combat);
+}
 
-        // 3. Check Flavor Text (Last Resort)
-        if (!isDamage && message.flavor && message.flavor.includes("Damage")) {
-            isDamage = true;
-        }
-
-        const autoClearTargetsEnabled = game.settings.get("foundry-target-reminder", "autoClearTargets");
-        if (isDamage && autoClearTargetsEnabled) {
-            console.log("Target Reminder | Cleanup Hook: Detected Damage Roll. Clearing targets.");
-            game.user.updateTokenTargets([]);
-        }
-    }, 250);
-});
+function onCombatDeleted(combat) {
+    const saved = lastTurns.get(combat.id);
+    if (saved?.started && saved.active && saved.sceneId === canvas.scene?.id && ownsActor(saved.actor)) clearTargets();
+    lastTurns.delete(combat.id);
+}
