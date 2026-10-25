@@ -47,3 +47,7 @@ Foundry 14.369 is the latest stable release checked on 25 October 2026. This imp
 - [PF2e strike buttons](https://github.com/foundryvtt/pf2e/blob/master/static/templates/actors/character/partials/strike.hbs)
 
 Run `node --test tests/target-reminder.test.cjs` with Node.js 18 or newer. These tests mock Foundry and DOM interactions; they do not certify a running Foundry 14/PF2e combination. See [the live test checklist](tests/FOUNDRY-UAT.md). The manifest keeps `verified: 13` until Foundry 14 live testing is recorded.
+
+## Support
+
+<a href="https://www.buymeacoffee.com/jonathondawes" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-violet.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;" ></a>
