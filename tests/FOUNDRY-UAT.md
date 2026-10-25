@@ -25,6 +25,7 @@ Ran separate Gamemaster and Test_User1 sessions in AV Test, using an isolated Ta
 
 Passed live checks:
 - Target Reminder 2.1.0 is enabled.
+- Final popup styling verified: radio controls have a visible 17.6px box and can be checked directly, with a clear selected-row highlight.
 - A player without a target receives the popup from the native strike button.
 - Selecting QA Enemy continues exactly one original attack; its chat result names QA Enemy and AC 17.
 - No damage roll is generated automatically. Manual weapon damage works.
